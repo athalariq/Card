@@ -18,7 +18,7 @@
     "series_font_size": 15,
     "series_font_min": 11,
     "badge_font_size": 13,
-    "clip_radius": 16,
+    "clip_radius": 14,
     "corner_radius": 22,
     "hero_enabled": true,
     "hero_scale": 1.15

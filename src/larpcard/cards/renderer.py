@@ -8,7 +8,7 @@ from functools import cache
 from pathlib import Path
 from typing import cast
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from larpcard.cards.domain import RarityStyle, RenderCard, rarity_style
 
@@ -403,11 +403,15 @@ class CardRenderer:
         star_size = layout.star_size * s
         star = star_im.resize((star_size, star_size), Image.Resampling.LANCZOS)
         star = self._tint_image(star, style.highlight_rgb)
+        # soft drop shadow so the stars stay legible over bright artwork
+        shadow = Image.new("RGBA", star.size, (8, 10, 16, 0))
+        shadow.putalpha(star.getchannel("A").point(lambda a: a * 140 // 255))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(max(1.0, 1.1 * s)))
         for i in range(style.stars):
-            canvas.alpha_composite(
-                star,
-                ((layout.star_left + i * layout.star_gap) * s, layout.star_top * s),
-            )
+            x = (layout.star_left + i * layout.star_gap) * s
+            y = layout.star_top * s
+            canvas.alpha_composite(shadow, (x, y + max(1, s)))
+            canvas.alpha_composite(star, (x, y))
 
     def _draw_badge(
         self,
