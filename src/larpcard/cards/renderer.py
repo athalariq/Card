@@ -42,6 +42,17 @@ class FrameLayout:
     corner_radius: int = 22
     hero_enabled: bool = True
     hero_scale: float = 1.15
+    # Rarity-frame extras (used by per-rarity frames such as common/legendary):
+    # stars_baked means the frame artwork carries its own rarity emblem, so the
+    # renderer composites "<rarity>-emblem.png" instead of drawing star icons;
+    # badge_style "plate" draws only the serial text inside the frame's baked
+    # badge window; gradient_enabled toggles the programmatic bottom gradient
+    # (rarity frames bake a glass name plate instead); plate_top is the plate's
+    # top edge used to pin hero artwork.
+    stars_baked: bool = False
+    badge_style: str = "pill"
+    gradient_enabled: bool = True
+    plate_top: int = 555
 
     @classmethod
     def from_json(cls, path: Path) -> FrameLayout:
@@ -71,6 +82,10 @@ class FrameLayout:
             corner_radius=data.get("corner_radius", 22),
             hero_enabled=data.get("hero_enabled", True),
             hero_scale=data.get("hero_scale", 1.15),
+            stars_baked=data.get("stars_baked", False),
+            badge_style=data.get("badge_style", "pill"),
+            gradient_enabled=data.get("gradient_enabled", True),
+            plate_top=data.get("plate_top", 555),
         )
 
 
@@ -119,12 +134,13 @@ class CardRenderer:
             if DEBUG_VIEWPORT:
                 self._draw_debug_viewport(canvas, layout)
 
-        self._draw_bottom_gradient(canvas, layout, style)
+        if layout.gradient_enabled:
+            self._draw_bottom_gradient(canvas, layout, style)
 
         if not hero and frame is not None:
             canvas.alpha_composite(frame)
 
-        self._draw_stars(canvas, card, layout, style)
+        self._draw_emblem(canvas, card, layout, style)
         self._draw_badge(canvas, card, layout, style)
         self._draw_text(canvas, card, layout)
 
@@ -306,15 +322,20 @@ class CardRenderer:
             artwork = artwork.crop(bbox)
 
         target_h = h * layout.hero_scale
+        pin_bottom = h - 6 * s
+        if layout.plate_top < CARD_SIZE[1]:
+            # The baked name plate eats the bottom: fit the character between
+            # the top rim and the plate, feet sinking slightly under the
+            # plate's top edge while the head still approaches the rim.
+            target_h = (layout.plate_top - 2) * s
+            pin_bottom = (layout.plate_top + 6) * s
         max_w = w * 1.08
         factor = min(target_h / artwork.height, max_w / artwork.width)
         aw = max(1, int(artwork.width * factor))
         ah = max(1, int(artwork.height * factor))
         character = artwork.resize((aw, ah), Image.Resampling.LANCZOS)
         x = (w - aw) // 2
-        # pinned near the bottom so the top of the character overflows the rim
-        y = h - ah - 6 * s
-        canvas.alpha_composite(character, (x, y))
+        canvas.alpha_composite(character, (x, pin_bottom - ah))
 
     def _draw_bottom_gradient(
         self, canvas: Image.Image, layout: FrameLayout, style: RarityStyle
@@ -387,6 +408,33 @@ class CardRenderer:
             stroke_fill=(0, 0, 0, 150),
         )
 
+    def _draw_emblem(
+        self,
+        canvas: Image.Image,
+        card: RenderCard,
+        layout: FrameLayout,
+        style: RarityStyle,
+    ) -> None:
+        """Composite the frame's baked rarity emblem, or draw stars.
+
+        Per-rarity frames can carry their emblem (e.g. bursting stars or a
+        crown) as a "<rarity>-emblem.png" overlay. The emblem is drawn after
+        the artwork and hero character so it always sits on top, exactly like
+        the reference frames where the stars overlap the card's top edge. When
+        the overlay is missing we fall back to the programmatic stars.
+        """
+
+        if not layout.stars_baked:
+            self._draw_stars(canvas, card, layout, style)
+            return
+        emblem = self._load_asset("frames", f"{card.rarity.value}-emblem")
+        if emblem is None:
+            self._draw_stars(canvas, card, layout, style)
+            return
+        canvas.alpha_composite(
+            emblem.resize(canvas.size, Image.Resampling.LANCZOS), (0, 0)
+        )
+
     def _draw_stars(
         self,
         canvas: Image.Image,
@@ -427,6 +475,24 @@ class CardRenderer:
         bb = draw.textbbox((0, 0), serial, font=font)
         tw = int(bb[2] - bb[0])
         th = int(bb[3] - bb[1])
+
+        if layout.badge_style == "plate":
+            # The frame bakes its own chrome badge window; only center the
+            # serial inside that window, no pill body.
+            bw = layout.badge_width * s
+            bh = layout.badge_height * s
+            bx = layout.badge_right * s - bw
+            by = layout.badge_top * s
+            draw.text(
+                (bx + (bw - tw) // 2, by + (bh - th) // 2 - bb[1]),
+                serial,
+                font=font,
+                fill=(246, 249, 255, 255),
+                stroke_width=1 * s,
+                stroke_fill=(0, 0, 0, 160),
+            )
+            return
+
         padding = 11 * s
         bh = max(layout.badge_height * s, th + 10 * s)
         bw = tw + padding * 2
