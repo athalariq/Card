@@ -51,6 +51,7 @@ class Listing:
     sold_at: datetime | None
     buyer_id: int | None
     image_path: str
+    frame_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

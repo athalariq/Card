@@ -3,7 +3,7 @@
 LarpCard is a modular Discord collectible card game built with Python 3.12,
 discord.py, PostgreSQL, Redis, SQLAlchemy, Alembic, and Pillow.
 
-This repository currently contains the first playable vertical slice:
+This repository currently contains:
 
 - asynchronous application bootstrap and dependency wiring
 - card, series, player, drop, slot, and ownership persistence models
@@ -11,7 +11,33 @@ This repository currently contains the first playable vertical slice:
 - Redis-backed distributed drop cooldowns
 - weighted 2-4 card drops with expiring Discord claim buttons
 - a 401 x 555 premium card renderer and responsive drop contact sheet
-- an initial Alembic migration and focused unit tests
+- a coins/gems economy with daily + weekly rewards and streaks
+- an interactive inventory browser with favorites, filters, and sorting
+- a coin-based marketplace with a configurable sales fee
+- two-player card trades with dual confirmation
+- player profiles with wallets, collection stats, and reward streaks
+- Alembic migrations plus unit and SQLite-backed adapter tests
+
+## Bot commands
+
+| Command | Description |
+| --- | --- |
+| `/drop` | Generate a fresh card drop (2-4 cards) |
+| `/inventory` | Browse your collection with filters, sorting, favorites, and quick-sell |
+| `/market browse` | Browse marketplace listings with filters; buy in two taps |
+| `/market sell` | List one of your cards for coins |
+| `/market my-listings` | View and cancel your active listings |
+| `/trade @user` | Interactive two-player trade with dual confirmation |
+| `/daily` | Claim the daily coin reward (7-day streak doubles it) |
+| `/weekly` | Claim the weekly gem reward (7-day cooldown) |
+| `/profile [@user]` | Wallet, collection stats, and reward streaks |
+| `/card-create` | (Admin) Create a card definition from an uploaded image |
+| `/sync-commands` | (Admin) Force-sync slash commands for the guild |
+
+Frame overlays are regenerated with `python assets/frames/generate_frame.py`.
+Frames are border-only transparent overlays: stars, badges, bottom gradient,
+and text are drawn (and tinted) by the renderer per rarity, so do not bake
+them into frame PNGs.
 
 ## Local setup
 

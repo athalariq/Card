@@ -4,7 +4,7 @@ import io
 import logging
 import re
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID
 
 import discord
 from discord import app_commands
@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from larpcard.bot.container import AppContainer
-from larpcard.cards.domain import Rarity
+from larpcard.cards.domain import Rarity, rarity_style
 from larpcard.database.models import CardDefinitionModel, CharacterModel, SeriesModel
 
 logger = logging.getLogger(__name__)
@@ -24,8 +24,9 @@ _MAX_IMAGE_SIZE = 10 * 1024 * 1024
 
 
 class AdminCog(commands.Cog):
-    def __init__(self, container: AppContainer) -> None:
+    def __init__(self, container: AppContainer, bot: commands.Bot) -> None:
         self._container = container
+        self._bot = bot
 
     @app_commands.command(name="card-create", description="Create a new card definition.")
     @app_commands.guild_only()
@@ -136,7 +137,7 @@ class AdminCog(commands.Cog):
             return
 
         await interaction.followup.send(
-            f"Card created: **{character}** ({rarity_enum.display_name}) "
+            f"Card created: **{character}** ({rarity_style(rarity_enum).display_name}) "
             f"from **{series}**\n`#{filename}`",
             ephemeral=True,
         )
@@ -162,8 +163,8 @@ class AdminCog(commands.Cog):
         if guild is None:
             return
 
-        self.bot.tree.clear_commands(guild=guild)
-        synced = await self.bot.tree.sync(guild=guild)
+        self._bot.tree.clear_commands(guild=guild)
+        synced = await self._bot.tree.sync(guild=guild)
         await interaction.followup.send(
             f"Synced {len(synced)} commands to this guild. "
             "Old stale commands should be gone within a few seconds.",
@@ -206,7 +207,7 @@ async def _get_or_create_series(
 
 async def _get_or_create_character(
     session: AsyncSession,
-    series_id: int,
+    series_id: UUID,
     name: str,
 ) -> CharacterModel:
     character = await session.scalar(

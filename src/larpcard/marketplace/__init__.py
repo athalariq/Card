@@ -4,10 +4,10 @@ from larpcard.marketplace.domain import (
     Listing,
     ListingError,
     ListingFilters,
+    ListingNotFoundError,
     ListingPage,
     ListingSort,
     ListingStatus,
-    ListingNotFoundError,
     NotOwnerError,
     SoldOutError,
 )

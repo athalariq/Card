@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import contains_eager, joinedload, selectinload
 
 from larpcard.cards.domain import CardTemplate, Rarity, RenderCard
 from larpcard.database.models import (
@@ -20,6 +20,7 @@ from larpcard.database.models import (
     OwnedCardModel,
     PlayerModel,
     RewardClaimModel,
+    SeriesModel,
     TradeCardModel,
     TradeModel,
     TransactionModel,
@@ -60,6 +61,7 @@ from larpcard.trade.domain import Trade, TradeCard, TradeCardNotOwnedError, Trad
 
 _DAILY_REWARD_AMOUNT = 100
 _WEEKLY_REWARD_AMOUNT = 500
+_WEEKLY_STREAK_GRACE_DAYS = 13
 
 
 class SqlAlchemyCardCatalog:
@@ -424,12 +426,14 @@ class SqlAlchemyRewardStore:
 
             streak = 1
             if last is not None:
-                expected = last.claim_date
-                yesterday = today
-                from datetime import timedelta
-
-                yesterday = today - timedelta(days=1)
-                if last.claim_date == yesterday:
+                if reward_type == RewardType.DAILY:
+                    continues = last.claim_date == today - timedelta(days=1)
+                else:
+                    # weekly streaks survive as long as a claim lands within
+                    # roughly the previous week cycle
+                    gap = (today - last.claim_date).days
+                    continues = gap <= _WEEKLY_STREAK_GRACE_DAYS
+                if continues:
                     streak = last.streak + 1
 
             model = RewardClaimModel(
@@ -453,6 +457,7 @@ class SqlAlchemyRewardStore:
             amount=model.amount,
             streak=model.streak,
             claimed_at=model.created_at,
+            claim_date=model.claim_date,
         )
 
     async def last_claim(
@@ -467,7 +472,7 @@ class SqlAlchemyRewardStore:
                     RewardClaimModel.player_id == player_id,
                     RewardClaimModel.reward_type == reward_type.value,
                 )
-                .order_by(RewardClaimModel.created_at.desc())
+                .order_by(RewardClaimModel.claim_date.desc())
                 .limit(1)
             )
         if model is None:
@@ -480,6 +485,7 @@ class SqlAlchemyRewardStore:
             amount=model.amount,
             streak=model.streak,
             claimed_at=model.created_at,
+            claim_date=model.claim_date,
         )
 
 
@@ -499,11 +505,14 @@ class SqlAlchemyInventoryQuery:
         async with self._sessions() as session:
             base = (
                 select(OwnedCardModel)
+                .join(OwnedCardModel.definition)
+                .join(CardDefinitionModel.character)
+                .join(CharacterModel.series)
                 .where(OwnedCardModel.owner_id == player_id)
                 .options(
-                    joinedload(OwnedCardModel.definition)
-                    .joinedload(CardDefinitionModel.character)
-                    .joinedload(CharacterModel.series)
+                    contains_eager(OwnedCardModel.definition)
+                    .contains_eager(CardDefinitionModel.character)
+                    .contains_eager(CharacterModel.series)
                 )
             )
 
@@ -524,7 +533,7 @@ class SqlAlchemyInventoryQuery:
 
             count_stmt = base.with_only_columns(
                 func.count(OwnedCardModel.id),
-                maintain_column_froms=False,
+                maintain_column_froms=True,
             )
             total_count = (await session.scalar(count_stmt)) or 0
 
@@ -625,7 +634,17 @@ class SqlAlchemyMarketplaceRepository:
             )
             session.add(model)
             await session.flush()
-        return _listing_from_model(model)
+            # Re-select so the joined definition relationship is populated
+            # before the session closes.
+            stored = await session.scalar(
+                select(MarketplaceListingModel).where(
+                    MarketplaceListingModel.id == model.id
+                )
+            )
+            if stored is None:  # pragma: no cover - defensive
+                raise ValueError("listing disappeared immediately after insert")
+            listing = _listing_from_model(stored)
+        return listing
 
     async def get_active_listing(self, listing_id: UUID) -> Listing | None:
         async with self._sessions() as session:
@@ -656,10 +675,19 @@ class SqlAlchemyMarketplaceRepository:
             model = await session.get(
                 MarketplaceListingModel, listing_id, with_for_update=True
             )
-            if model is not None:
-                model.status = ListingStatus.SOLD.value
-                model.buyer_id = buyer_id
-                model.sold_at = sold_at
+            if model is None:
+                return
+            model.status = ListingStatus.SOLD.value
+            model.buyer_id = buyer_id
+            model.sold_at = sold_at
+            # Hand the physical card over to the buyer in the same transaction
+            # as the sale so a purchase can never be paid for but not received.
+            owned = await session.get(
+                OwnedCardModel, model.ownership_id, with_for_update=True
+            )
+            if owned is not None and owned.owner_id != buyer_id:
+                owned.owner_id = buyer_id
+                owned.is_favorite = False
 
     async def cancel_listing(self, listing_id: UUID) -> None:
         async with self._sessions() as session, session.begin():
@@ -715,7 +743,7 @@ class SqlAlchemyMarketplaceRepository:
 
             count_stmt = base.with_only_columns(
                 func.count(MarketplaceListingModel.id),
-                maintain_column_froms=False,
+                maintain_column_froms=True,
             )
             total_count = (await session.scalar(count_stmt)) or 0
 
@@ -783,7 +811,17 @@ class SqlAlchemyTradeRepository:
             )
             session.add(model)
             await session.flush()
-        return _trade_from_model(model)
+            # Re-select with the card slots eagerly loaded so mapping does
+            # not require a lazy load.
+            stored = await session.scalar(
+                select(TradeModel)
+                .where(TradeModel.id == trade_id)
+                .options(selectinload(TradeModel.player1_card_slots))
+            )
+            if stored is None:  # pragma: no cover - defensive
+                raise ValueError("trade disappeared immediately after insert")
+            trade = _trade_from_model(stored)
+        return trade
 
     async def get(self, trade_id: UUID) -> Trade | None:
         async with self._sessions() as session:
@@ -791,7 +829,7 @@ class SqlAlchemyTradeRepository:
                 select(TradeModel)
                 .where(TradeModel.id == trade_id)
                 .options(
-                    joinedload(TradeModel.player1_card_slots)
+                    selectinload(TradeModel.player1_card_slots)
                 )
             )
         if model is None:
@@ -881,8 +919,6 @@ class SqlAlchemyTradeRepository:
             if model is None:
                 return
 
-            from datetime import UTC, datetime
-
             now = datetime.now(UTC)
 
             # Load card slots
@@ -906,6 +942,7 @@ class SqlAlchemyTradeRepository:
                 owned = await session.get(OwnedCardModel, slot.ownership_id)
                 if owned is not None:
                     owned.owner_id = new_owner_id
+                    owned.is_favorite = False
 
             model.state = TradeState.COMPLETED.value
             model.completed_at = now
@@ -918,6 +955,7 @@ class SqlAlchemyTradeRepository:
 
 
 def _listing_from_model(model: MarketplaceListingModel) -> Listing:
+    definition = model.definition
     return Listing(
         id=model.id,
         seller_id=model.seller_id,
@@ -935,6 +973,7 @@ def _listing_from_model(model: MarketplaceListingModel) -> Listing:
         sold_at=model.sold_at,
         buyer_id=model.buyer_id,
         image_path=model.image_path,
+        frame_path=definition.frame_path if definition is not None else None,
     )
 
 
@@ -988,6 +1027,7 @@ def _inventory_card_from_model(model: OwnedCardModel) -> InventoryCard:
         is_favorite=model.is_favorite,
         acquired_at=model.acquired_at,
         image_path=definition.image_path,
+        frame_path=definition.frame_path,
     )
 
 

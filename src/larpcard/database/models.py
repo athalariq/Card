@@ -405,6 +405,12 @@ class MarketplaceListingModel(Base):
     sold_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     buyer_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
 
+    definition: Mapped[CardDefinitionModel] = relationship(
+        "CardDefinitionModel",
+        viewonly=True,
+        lazy="joined",
+    )
+
     __table_args__ = (
         CheckConstraint("price > 0", name="positive_price"),
         Index("ix_marketplace_active_search", "status", "rarity", "created_at"),

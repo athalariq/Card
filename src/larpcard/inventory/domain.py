@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
@@ -47,6 +47,7 @@ class InventoryCard:
     is_favorite: bool
     acquired_at: datetime
     image_path: str
+    frame_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from uuid import UUID
 
 from larpcard.economy.domain import CurrencyType, TransactionType
 from larpcard.economy.service import EconomyService
@@ -37,6 +38,23 @@ class MarketplaceService:
         self._marketplace_fee_percent = marketplace_fee_percent
         self._min_price = min_price
         self._max_price = max_price
+
+    @property
+    def fee_percent(self) -> int:
+        return self._marketplace_fee_percent
+
+    @property
+    def min_price(self) -> int:
+        return self._min_price
+
+    @property
+    def max_price(self) -> int:
+        return self._max_price
+
+    def seller_proceeds(self, price: int) -> int:
+        """Coins the seller receives after the marketplace fee."""
+
+        return price - price * self._marketplace_fee_percent // 100
 
     async def list_card(
         self,

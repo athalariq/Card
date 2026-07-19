@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import unittest
-from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID, uuid4
 
-from larpcard.economy.domain import Balance, CurrencyType, TransactionType
+from larpcard.economy.domain import CurrencyType
 from larpcard.economy.service import EconomyService
 from larpcard.marketplace.domain import (
     CannotBuyOwnListingError,
@@ -20,7 +19,6 @@ from larpcard.marketplace.domain import (
     SoldOutError,
 )
 from larpcard.marketplace.service import MarketplaceService
-
 from tests.test_economy import MemoryBalanceStore, MemoryTransactionLog
 
 
@@ -137,48 +135,46 @@ class MemoryMarketplaceRepository:
         page_size: int,
     ) -> ListingPage:
         items = [
-            l for l in self._listings.values() if l.status == ListingStatus.ACTIVE
+            entry for entry in self._listings.values() if entry.status == ListingStatus.ACTIVE
         ]
         if filters.rarity is not None:
-            items = [l for l in items if l.rarity == filters.rarity]
+            items = [entry for entry in items if entry.rarity == filters.rarity]
         if filters.series_name:
             items = [
-                l
-                for l in items
-                if filters.series_name.lower() in l.series_name.lower()
+                entry
+                for entry in items
+                if filters.series_name.lower() in entry.series_name.lower()
             ]
         if filters.character_name:
             items = [
-                l
-                for l in items
-                if filters.character_name.lower() in l.character_name.lower()
+                entry
+                for entry in items
+                if filters.character_name.lower() in entry.character_name.lower()
             ]
         if filters.seller_id is not None:
-            items = [l for l in items if l.seller_id == filters.seller_id]
+            items = [entry for entry in items if entry.seller_id == filters.seller_id]
         if filters.min_price is not None:
-            items = [l for l in items if l.price >= filters.min_price]
+            items = [entry for entry in items if entry.price >= filters.min_price]
         if filters.max_price is not None:
-            items = [l for l in items if l.price <= filters.max_price]
+            items = [entry for entry in items if entry.price <= filters.max_price]
         if filters.search:
             p = filters.search.lower()
             items = [
-                l
-                for l in items
-                if p in l.character_name.lower() or p in l.series_name.lower()
+                entry
+                for entry in items
+                if p in entry.character_name.lower() or p in entry.series_name.lower()
             ]
-
-        reverse = True
         match sort:
             case ListingSort.NEWEST:
-                items.sort(key=lambda l: l.created_at, reverse=True)
+                items.sort(key=lambda entry: entry.created_at, reverse=True)
             case ListingSort.OLDEST:
-                items.sort(key=lambda l: l.created_at, reverse=False)
+                items.sort(key=lambda entry: entry.created_at, reverse=False)
             case ListingSort.PRICE_ASC:
-                items.sort(key=lambda l: l.price, reverse=False)
+                items.sort(key=lambda entry: entry.price, reverse=False)
             case ListingSort.PRICE_DESC:
-                items.sort(key=lambda l: l.price, reverse=True)
+                items.sort(key=lambda entry: entry.price, reverse=True)
             case ListingSort.RARITY:
-                items.sort(key=lambda l: l.rarity, reverse=True)
+                items.sort(key=lambda entry: entry.rarity, reverse=True)
 
         total = len(items)
         total_pages = max(1, (total + page_size - 1) // page_size)
@@ -457,5 +453,5 @@ class MarketplaceServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         page = await service.search(sort=ListingSort.PRICE_ASC, page_size=10)
-        prices = [l.price for l in page.items]
+        prices = [entry.price for entry in page.items]
         self.assertEqual(prices, [1000, 3000, 5000])

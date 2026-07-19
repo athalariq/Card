@@ -60,32 +60,23 @@ class MemoryInventoryQuery:
                 or pattern in c.series_name.lower()
             ]
 
-        reverse = True
-        key_fn = lambda c: c.acquired_at
         match sort:
             case InventorySort.NEWEST:
-                key_fn = lambda c: c.acquired_at
-                reverse = True
+                cards.sort(key=lambda c: c.acquired_at, reverse=True)
             case InventorySort.OLDEST:
-                key_fn = lambda c: c.acquired_at
-                reverse = False
+                cards.sort(key=lambda c: c.acquired_at)
             case InventorySort.SERIES:
-                key_fn = lambda c: c.series_name
-                reverse = False
+                cards.sort(key=lambda c: c.series_name)
             case InventorySort.CHARACTER:
-                key_fn = lambda c: c.character_name
-                reverse = False
+                cards.sort(key=lambda c: c.character_name)
             case InventorySort.RARITY:
-                key_fn = lambda c: c.rarity.value
-                reverse = True
+                cards.sort(key=lambda c: c.rarity.value, reverse=True)
             case InventorySort.FAVORITES:
-                key_fn = lambda c: c.is_favorite
-                reverse = True
+                cards.sort(key=lambda c: c.is_favorite, reverse=True)
             case InventorySort.DUPLICATES:
-                key_fn = lambda c: c.definition_id
-                reverse = False
-
-        cards.sort(key=key_fn, reverse=reverse)
+                cards.sort(key=lambda c: c.definition_id)
+            case _:
+                cards.sort(key=lambda c: c.acquired_at, reverse=True)
         total_count = len(cards)
         total_pages = max(1, (total_count + page_size - 1) // page_size)
         offset = (page - 1) * page_size

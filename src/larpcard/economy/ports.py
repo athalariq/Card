@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import date
 from typing import Protocol
-from uuid import UUID
 
 from larpcard.economy.domain import (
     Balance,

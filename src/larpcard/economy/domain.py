@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from decimal import Decimal
+from datetime import date, datetime
 from enum import StrEnum
 from uuid import UUID
 
@@ -91,6 +90,17 @@ class RewardClaim:
     amount: int
     streak: int
     claimed_at: datetime
+    claim_date: date | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RewardAvailability:
+    """Read model describing a player's standing for a repeatable reward."""
+
+    reward_type: RewardType
+    streak: int
+    on_cooldown: bool
+    next_available: date
 
 
 class EconomyError(Exception):
@@ -108,7 +118,14 @@ class InsufficientFundsError(EconomyError):
 
 
 class RewardAlreadyClaimedError(EconomyError):
-    pass
+    def __init__(
+        self,
+        message: str = "reward already claimed",
+        *,
+        next_available: date | None = None,
+    ) -> None:
+        self.next_available = next_available
+        super().__init__(message)
 
 
 class NegativeAmountError(EconomyError):

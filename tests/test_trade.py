@@ -55,7 +55,6 @@ class MemoryTradeRepository:
             raise TradeNotFoundError(trade_id)
 
         # Verify all cards are owned (simulated)
-        player_cards = {}  # player_id -> cards
         if not hasattr(self, "_owned"):
             self._owned = {}  # type: ignore[attribute-defined-outside-init]
         owned = self._owned.get(player_id, set())  # type: ignore[attr-defined]

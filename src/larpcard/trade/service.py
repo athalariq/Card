@@ -5,7 +5,6 @@ from uuid import UUID, uuid4
 
 from larpcard.trade.domain import (
     Trade,
-    TradeCardNotOwnedError,
     TradeError,
     TradeInvalidStateError,
     TradeNotFoundError,

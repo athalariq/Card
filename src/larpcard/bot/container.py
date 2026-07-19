@@ -9,6 +9,10 @@ from larpcard.cards.renderer import CardRenderer
 from larpcard.config import Settings
 from larpcard.database.session import Database
 from larpcard.drops.service import DropService
+from larpcard.economy.service import EconomyService
+from larpcard.inventory.service import InventoryService
+from larpcard.marketplace.service import MarketplaceService
+from larpcard.trade.service import TradeService
 
 
 @dataclass(slots=True)
@@ -18,6 +22,10 @@ class AppContainer:
     drops: DropService
     artwork: ArtworkStore
     renderer: CardRenderer
+    economy: EconomyService
+    inventory: InventoryService
+    marketplace: MarketplaceService
+    trade: TradeService
     redis: Redis | None = field(default=None)
 
     async def close(self) -> None:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
 
-from larpcard.cards.domain import RenderCard, rarity_style
+from larpcard.cards.domain import RarityStyle, RenderCard, rarity_style
 
 CARD_SIZE = (401, 555)
 
@@ -190,8 +190,8 @@ class CardRenderer:
         self, canvas: Image.Image, artwork: Image.Image, layout: FrameLayout
     ) -> None:
         s = self._scale
-        l, t, r, b = layout.viewport
-        aw, ah = (r - l) * s, (b - t) * s
+        left, top, right, bottom = layout.viewport
+        aw, ah = (right - left) * s, (bottom - top) * s
 
         source = artwork.convert("RGBA")
         alpha = source.getchannel("A")
@@ -216,16 +216,16 @@ class CardRenderer:
             fitted, Image.new("RGBA", fitted.size, (0, 0, 0, 0)), clip
         )
 
-        canvas.alpha_composite(fitted, (l * s, t * s))
+        canvas.alpha_composite(fitted, (left * s, top * s))
 
     def _draw_debug_viewport(
         self, canvas: Image.Image, layout: FrameLayout
     ) -> None:
         s = self._scale
-        l, t, r, b = layout.viewport
+        left, top, right, bottom = layout.viewport
         draw = ImageDraw.Draw(canvas)
         draw.rectangle(
-            (l * s, t * s, r * s, b * s),
+            (left * s, top * s, right * s, bottom * s),
             outline=(255, 0, 0, 255),
             width=3 * s,
         )
@@ -285,7 +285,7 @@ class CardRenderer:
         canvas: Image.Image,
         card: RenderCard,
         layout: FrameLayout,
-        style,
+        style: RarityStyle,
     ) -> None:
         star_im = self._load_asset("stars", card.rarity.value)
         if star_im is None:
@@ -307,7 +307,7 @@ class CardRenderer:
         canvas: Image.Image,
         card: RenderCard,
         layout: FrameLayout,
-        style,
+        style: RarityStyle,
     ) -> None:
         badge_im = self._load_asset("badges", "badge")
         if badge_im is None:
@@ -317,8 +317,8 @@ class CardRenderer:
         font = self._font(layout.badge_font_size, bold=True)
         draw = ImageDraw.Draw(canvas)
         bb = draw.textbbox((0, 0), serial, font=font)
-        tw = bb[2] - bb[0]
-        th = bb[3] - bb[1]
+        tw = int(bb[2] - bb[0])
+        th = int(bb[3] - bb[1])
         padding = 10 * s
         bw = tw + padding * 2
         bh = layout.badge_height * s
@@ -398,7 +398,9 @@ class CardRenderer:
                 return ImageFont.truetype(str(p), size * s)
         return ImageFont.load_default(size=size * s)
 
-    @cache
+    # The renderer is a process singleton and the asset set is bounded by the
+    # files on disk, so caching on the method does not leak memory.
+    @cache  # noqa: B019
     def _load_asset(self, subdir: str, name: str) -> Image.Image | None:
         if self._asset_root is None:
             return None
@@ -409,7 +411,7 @@ class CardRenderer:
         im.load()
         return im
 
-    @cache
+    @cache  # noqa: B019
     def _load_layout(self, name: str) -> FrameLayout | None:
         if self._asset_root is None:
             return None

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
-from pathlib import Path
 
 import discord
 from discord import app_commands
@@ -12,8 +10,7 @@ from PIL import Image
 
 from larpcard.bot.container import AppContainer
 from larpcard.bot.ui.drop_view import DropClaimView
-from larpcard.cards.assets import ArtworkNotFoundError
-from larpcard.cards.domain import rarity_style
+from larpcard.bot.ui.rendering import encode_png, render_card_image
 from larpcard.drops.domain import CardPoolEmptyError, DropCooldownError, DropSlot
 
 logger = logging.getLogger(__name__)
@@ -34,9 +31,8 @@ class DropsCog(commands.Cog):
             )
             return
         is_admin = (
-            interaction.user.guild_permissions.administrator
-            if interaction.guild
-            else False
+            isinstance(interaction.user, discord.Member)
+            and interaction.user.guild_permissions.administrator
         )
         try:
             drop = await self._container.drops.create_drop(
@@ -61,7 +57,7 @@ class DropsCog(commands.Cog):
 
         rendered = await asyncio.gather(*(self._render_slot(slot) for slot in drop.slots))
         sheet = await asyncio.to_thread(self._container.renderer.compose_drop, rendered)
-        payload = await asyncio.to_thread(_encode_png, sheet)
+        payload = await asyncio.to_thread(encode_png, sheet)
         view = DropClaimView(self._container.drops, drop)
         message = await interaction.followup.send(
             file=discord.File(payload, filename=f"drop-{drop.id}.png"),
@@ -78,42 +74,9 @@ class DropsCog(commands.Cog):
             )
 
     async def _render_slot(self, slot: DropSlot) -> Image.Image:
-        style = rarity_style(slot.card.rarity)
-        try:
-            artwork = await self._container.artwork.load(slot.image_path)
-        except ArtworkNotFoundError:
-            logger.exception(
-                "drop_artwork_missing",
-                extra={"template_id": slot.card.template_id, "path": slot.image_path},
-            )
-            artwork = await asyncio.to_thread(
-                self._container.renderer.placeholder_artwork,
-                slot.card.character_name,
-                style.accent_rgb,
-            )
-
-        frame_name: str | None = None
-        custom_frame = None
-        if slot.frame_path:
-            frame_name = Path(slot.frame_path).stem
-            try:
-                custom_frame = await self._container.artwork.load(slot.frame_path)
-            except ArtworkNotFoundError:
-                logger.exception(
-                    "drop_frame_missing",
-                    extra={"template_id": slot.card.template_id, "path": slot.frame_path},
-                )
-        return await asyncio.to_thread(
-            self._container.renderer.render,
+        return await render_card_image(
+            self._container,
             slot.card,
-            artwork,
-            custom_frame,
-            frame_name,
+            slot.image_path,
+            slot.frame_path,
         )
-
-
-def _encode_png(image: Image.Image) -> io.BytesIO:
-    buffer = io.BytesIO()
-    image.save(buffer, "PNG", optimize=True)
-    buffer.seek(0)
-    return buffer

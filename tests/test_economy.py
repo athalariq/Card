@@ -3,12 +3,11 @@ from __future__ import annotations
 import unittest
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from larpcard.economy.domain import (
     Balance,
     CurrencyType,
-    EconomyError,
     InsufficientFundsError,
     NegativeAmountError,
     RewardAlreadyClaimedError,
@@ -17,7 +16,6 @@ from larpcard.economy.domain import (
     Transaction,
     TransactionType,
 )
-from larpcard.economy.ports import BalanceStore, RewardStore, TransactionLog
 from larpcard.economy.service import EconomyService
 
 
@@ -150,7 +148,9 @@ class MemoryRewardStore:
 
 
 class EconomyServiceTests(unittest.IsolatedAsyncioTestCase):
-    def make_service(self) -> tuple[EconomyService, MemoryBalanceStore, MemoryTransactionLog]:
+    def make_service(
+        self,
+    ) -> tuple[EconomyService, MemoryBalanceStore, MemoryTransactionLog, MemoryRewardStore]:
         balances = MemoryBalanceStore()
         transactions = MemoryTransactionLog()
         rewards = MemoryRewardStore()
@@ -159,20 +159,20 @@ class EconomyServiceTests(unittest.IsolatedAsyncioTestCase):
             transactions=transactions,
             rewards=rewards,
         )
-        return service, balances, transactions
+        return service, balances, transactions, rewards
 
     async def test_get_balance_returns_zero_for_new_player(self) -> None:
-        service, _, _ = self.make_service()
+        service, _, _, _ = self.make_service()
         balance = await service.get_balance(100)
         self.assertEqual(balance, Balance(0, 0, 0))
 
     async def test_add_currency_increases_balance(self) -> None:
-        service, _, _ = self.make_service()
+        service, _, _, _ = self.make_service()
         balance = await service.add_currency(100, CurrencyType.COINS, 500)
         self.assertEqual(balance.coins, 500)
 
     async def test_add_currency_records_transaction(self) -> None:
-        service, _, txns = self.make_service()
+        service, _, txns, _ = self.make_service()
         await service.add_currency(100, CurrencyType.COINS, 500)
         recent = await txns.list_recent(100)
         self.assertEqual(len(recent), 1)
@@ -180,24 +180,24 @@ class EconomyServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recent[0].transaction_type, TransactionType.ADMIN_GRANT)
 
     async def test_add_negative_amount_raises_error(self) -> None:
-        service, _, _ = self.make_service()
+        service, _, _, _ = self.make_service()
         with self.assertRaises(NegativeAmountError):
             await service.add_currency(100, CurrencyType.COINS, -50)
 
     async def test_remove_currency_decreases_balance(self) -> None:
-        service, _, _ = self.make_service()
+        service, _, _, _ = self.make_service()
         await service.add_currency(100, CurrencyType.COINS, 1000)
         balance = await service.remove_currency(100, CurrencyType.COINS, 300)
         self.assertEqual(balance.coins, 700)
 
     async def test_remove_insufficient_funds_raises_error(self) -> None:
-        service, _, _ = self.make_service()
+        service, _, _, _ = self.make_service()
         await service.add_currency(100, CurrencyType.COINS, 100)
         with self.assertRaises(InsufficientFundsError):
             await service.remove_currency(100, CurrencyType.COINS, 200)
 
     async def test_transfer_moves_currency_between_players(self) -> None:
-        service, _, _ = self.make_service()
+        service, _, _, _ = self.make_service()
         await service.add_currency(100, CurrencyType.COINS, 500)
         await service.transfer(100, 200, CurrencyType.COINS, 200)
 
@@ -207,24 +207,126 @@ class EconomyServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(balance_200.coins, 200)
 
     async def test_daily_reward_increases_coins(self) -> None:
-        service, _, _ = self.make_service()
+        service, _, _, _ = self.make_service()
         claim = await service.claim_daily_reward(100)
         self.assertGreater(claim.streak, 0)
         balance = await service.get_balance(100)
         self.assertGreater(balance.coins, 0)
 
     async def test_daily_reward_cannot_be_claimed_twice(self) -> None:
-        service, _, _ = self.make_service()
+        service, _, _, _ = self.make_service()
         await service.claim_daily_reward(100)
         with self.assertRaises(RewardAlreadyClaimedError):
             await service.claim_daily_reward(100)
 
     async def test_weekly_reward_increases_gems(self) -> None:
-        service, _, _ = self.make_service()
+        service, _, _, _ = self.make_service()
         claim = await service.claim_weekly_reward(100)
         self.assertGreater(claim.streak, 0)
         balance = await service.get_balance(100)
         self.assertGreater(balance.gems, 0)
+
+    async def test_weekly_reward_gated_to_seven_days(self) -> None:
+        service, _, _, _ = self.make_service()
+        await service.claim_weekly_reward(100)
+        with self.assertRaises(RewardAlreadyClaimedError) as ctx:
+            await service.claim_weekly_reward(100)
+        self.assertEqual(
+            ctx.exception.next_available,
+            date.today() + timedelta(days=7),
+        )
+
+    async def test_weekly_reward_claimable_after_cooldown(self) -> None:
+        service, _, _, rewards = self.make_service()
+        old_claim = RewardClaim(
+            id=uuid4(),
+            player_id=100,
+            reward_type=RewardType.WEEKLY,
+            currency=CurrencyType.GEMS,
+            amount=500,
+            streak=3,
+            claimed_at=datetime.now(UTC) - timedelta(days=8),
+        )
+        rewards._claims.append(old_claim)  # type: ignore[attr-defined]
+        claim = await service.claim_weekly_reward(100)
+        self.assertEqual(claim.streak, 1)  # long gap resets the streak
+
+    async def test_daily_claim_error_carries_next_available(self) -> None:
+        service, _, _, _ = self.make_service()
+        await service.claim_daily_reward(100)
+        with self.assertRaises(RewardAlreadyClaimedError) as ctx:
+            await service.claim_daily_reward(100)
+        self.assertEqual(
+            ctx.exception.next_available,
+            date.today() + timedelta(days=1),
+        )
+
+    async def test_reward_availability_for_new_player(self) -> None:
+        service, _, _, _ = self.make_service()
+        daily = await service.reward_availability(100, RewardType.DAILY)
+        self.assertEqual(daily.streak, 0)
+        self.assertFalse(daily.on_cooldown)
+        self.assertEqual(daily.next_available, date.today())
+
+    async def test_reward_availability_after_daily_claim(self) -> None:
+        service, _, _, _ = self.make_service()
+        await service.claim_daily_reward(100)
+        daily = await service.reward_availability(100, RewardType.DAILY)
+        self.assertEqual(daily.streak, 1)
+        self.assertTrue(daily.on_cooldown)
+        self.assertEqual(daily.next_available, date.today() + timedelta(days=1))
+
+    async def test_reward_availability_resets_broken_streak(self) -> None:
+        service, _, _, rewards = self.make_service()
+        rewards._claims.append(  # type: ignore[attr-defined]
+            RewardClaim(
+                id=uuid4(),
+                player_id=100,
+                reward_type=RewardType.DAILY,
+                currency=CurrencyType.COINS,
+                amount=100,
+                streak=5,
+                claimed_at=datetime.now(UTC) - timedelta(days=3),
+            )
+        )
+        daily = await service.reward_availability(100, RewardType.DAILY)
+        self.assertEqual(daily.streak, 0)
+        self.assertFalse(daily.on_cooldown)
+
+    async def test_reward_availability_keeps_yesterday_streak(self) -> None:
+        service, _, _, rewards = self.make_service()
+        rewards._claims.append(  # type: ignore[attr-defined]
+            RewardClaim(
+                id=uuid4(),
+                player_id=100,
+                reward_type=RewardType.DAILY,
+                currency=CurrencyType.COINS,
+                amount=100,
+                streak=4,
+                claimed_at=datetime.now(UTC) - timedelta(days=1),
+            )
+        )
+        daily = await service.reward_availability(100, RewardType.DAILY)
+        self.assertEqual(daily.streak, 4)
+        self.assertFalse(daily.on_cooldown)
+
+    async def test_last_reward_claim_returns_none_when_never_claimed(self) -> None:
+        service, _, _, _ = self.make_service()
+        self.assertIsNone(await service.last_reward_claim(100, RewardType.DAILY))
+
+    async def test_final_daily_amount(self) -> None:
+        service, _, _, _ = self.make_service()
+        self.assertEqual(service.final_daily_amount(1), 100)
+        self.assertEqual(service.final_daily_amount(6), 100)
+        self.assertEqual(service.final_daily_amount(7), 200)
+        self.assertEqual(service.final_daily_amount(14), 200)
+
+    async def test_reward_amounts_exposed(self) -> None:
+        service, _, _, _ = self.make_service()
+        self.assertEqual(service.daily_reward_amount, 100)
+        self.assertEqual(service.weekly_reward_amount, 500)
+        self.assertEqual(service.streak_bonus_threshold, 7)
+        self.assertEqual(service.streak_bonus_multiplier, 2)
 
     async def test_balance_has_at_least(self) -> None:
         balance = Balance(coins=100, gems=50, event_tokens=10)

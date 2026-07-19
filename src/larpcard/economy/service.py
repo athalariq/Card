@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime
+from datetime import date, timedelta
 
 from larpcard.economy.domain import (
     Balance,
     CurrencyType,
-    EconomyError,
     InsufficientFundsError,
     NegativeAmountError,
     RewardAlreadyClaimedError,
+    RewardAvailability,
     RewardClaim,
     RewardType,
+    Transaction,
     TransactionType,
 )
 from larpcard.economy.ports import BalanceStore, RewardStore, TransactionLog
@@ -22,6 +23,9 @@ _DAILY_REWARD_AMOUNT = 100
 _WEEKLY_REWARD_AMOUNT = 500
 _STREAK_BONUS_THRESHOLD = 7
 _STREAK_BONUS_MULTIPLIER = 2
+_WEEKLY_COOLDOWN_DAYS = 7
+_WEEKLY_STREAK_GRACE_DAYS = 13
+_DAILY_STREAK_GRACE_DAYS = 1
 
 
 class EconomyService:
@@ -43,6 +47,29 @@ class EconomyService:
         self._weekly_reward_amount = weekly_reward_amount
         self._streak_bonus_threshold = streak_bonus_threshold
         self._streak_bonus_multiplier = streak_bonus_multiplier
+
+    @property
+    def daily_reward_amount(self) -> int:
+        return self._daily_reward_amount
+
+    @property
+    def weekly_reward_amount(self) -> int:
+        return self._weekly_reward_amount
+
+    @property
+    def streak_bonus_threshold(self) -> int:
+        return self._streak_bonus_threshold
+
+    @property
+    def streak_bonus_multiplier(self) -> int:
+        return self._streak_bonus_multiplier
+
+    def final_daily_amount(self, streak: int) -> int:
+        """Coins actually credited for a daily claim at the given streak."""
+
+        if streak > 0 and streak % self._streak_bonus_threshold == 0:
+            return self._daily_reward_amount * self._streak_bonus_multiplier
+        return self._daily_reward_amount
 
     async def get_balance(self, player_id: int) -> Balance:
         return await self._balances.get_balance(player_id)
@@ -152,12 +179,14 @@ class EconomyService:
         today = date.today()
         try:
             claim = await self._rewards.claim_reward(player_id, RewardType.DAILY, today)
-        except RewardAlreadyClaimedError:
-            raise
+        except RewardAlreadyClaimedError as error:
+            raise RewardAlreadyClaimedError(
+                "daily reward already claimed",
+                next_available=error.next_available
+                or await self._next_available(player_id, RewardType.DAILY, today),
+            ) from error
 
-        amount = self._daily_reward_amount
-        if claim.streak > 0 and claim.streak % self._streak_bonus_threshold == 0:
-            amount *= self._streak_bonus_multiplier
+        amount = self.final_daily_amount(claim.streak)
 
         await self._balances.add_currency(player_id, CurrencyType.COINS, amount)
         await self._transactions.record(
@@ -183,10 +212,23 @@ class EconomyService:
 
     async def claim_weekly_reward(self, player_id: int) -> RewardClaim:
         today = date.today()
+        last = await self._rewards.last_claim(player_id, RewardType.WEEKLY)
+        if last is not None:
+            last_claim_date = last.claim_date or last.claimed_at.date()
+            next_available = last_claim_date + timedelta(days=_WEEKLY_COOLDOWN_DAYS)
+            if today < next_available:
+                raise RewardAlreadyClaimedError(
+                    "weekly reward already claimed",
+                    next_available=next_available,
+                )
         try:
             claim = await self._rewards.claim_reward(player_id, RewardType.WEEKLY, today)
-        except RewardAlreadyClaimedError:
-            raise
+        except RewardAlreadyClaimedError as error:
+            raise RewardAlreadyClaimedError(
+                "weekly reward already claimed",
+                next_available=error.next_available
+                or await self._next_available(player_id, RewardType.WEEKLY, today),
+            ) from error
 
         amount = self._weekly_reward_amount
         await self._balances.add_currency(player_id, CurrencyType.GEMS, amount)
@@ -218,6 +260,64 @@ class EconomyService:
         offset: int = 0,
     ) -> list[Transaction]:
         return list(await self._transactions.list_recent(player_id, limit, offset))
+
+    async def last_reward_claim(
+        self,
+        player_id: int,
+        reward_type: RewardType,
+    ) -> RewardClaim | None:
+        return await self._rewards.last_claim(player_id, reward_type)
+
+    async def reward_availability(
+        self,
+        player_id: int,
+        reward_type: RewardType,
+    ) -> RewardAvailability:
+        today = date.today()
+        last = await self._rewards.last_claim(player_id, reward_type)
+        if last is None:
+            return RewardAvailability(
+                reward_type=reward_type,
+                streak=0,
+                on_cooldown=False,
+                next_available=today,
+            )
+
+        last_claim_date = last.claim_date or last.claimed_at.date()
+        gap = (today - last_claim_date).days
+        if reward_type is RewardType.DAILY:
+            on_cooldown = gap < 1
+            streak = last.streak if gap <= _DAILY_STREAK_GRACE_DAYS else 0
+            next_available = last_claim_date + timedelta(days=1) if on_cooldown else today
+        else:
+            on_cooldown = gap < _WEEKLY_COOLDOWN_DAYS
+            streak = last.streak if gap <= _WEEKLY_STREAK_GRACE_DAYS else 0
+            next_available = (
+                last_claim_date + timedelta(days=_WEEKLY_COOLDOWN_DAYS)
+                if on_cooldown
+                else today
+            )
+        return RewardAvailability(
+            reward_type=reward_type,
+            streak=streak,
+            on_cooldown=on_cooldown,
+            next_available=next_available,
+        )
+
+    async def _next_available(
+        self,
+        player_id: int,
+        reward_type: RewardType,
+        today: date,
+    ) -> date:
+        last = await self._rewards.last_claim(player_id, reward_type)
+        if last is None:
+            return today
+        last_claim_date = last.claim_date or last.claimed_at.date()
+        cooldown = (
+            1 if reward_type is RewardType.DAILY else _WEEKLY_COOLDOWN_DAYS
+        )
+        return last_claim_date + timedelta(days=cooldown)
 
 
 def _get_amount(balance: Balance, currency: CurrencyType) -> int:
