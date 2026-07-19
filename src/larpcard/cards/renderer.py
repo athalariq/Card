@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from typing import cast
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
 
@@ -30,6 +31,7 @@ class FrameLayout:
     badge_width: int = 66
     badge_height: int = 24
     gradient_start_y: int = 280
+    gradient_accent_blend: float = 0.16
     text_max_width: int = 340
     name_font_size: int = 28
     name_font_min: int = 16
@@ -38,6 +40,8 @@ class FrameLayout:
     badge_font_size: int = 13
     clip_radius: int = 16
     corner_radius: int = 22
+    hero_enabled: bool = True
+    hero_scale: float = 1.15
 
     @classmethod
     def from_json(cls, path: Path) -> FrameLayout:
@@ -56,6 +60,7 @@ class FrameLayout:
             badge_width=data.get("badge_width", 66),
             badge_height=data.get("badge_height", 24),
             gradient_start_y=data.get("gradient_start_y", 280),
+            gradient_accent_blend=data.get("gradient_accent_blend", 0.16),
             text_max_width=data.get("text_max_width", 340),
             name_font_size=data.get("name_font_size", 28),
             name_font_min=data.get("name_font_min", 16),
@@ -64,6 +69,8 @@ class FrameLayout:
             badge_font_size=data.get("badge_font_size", 13),
             clip_radius=data.get("clip_radius", 16),
             corner_radius=data.get("corner_radius", 22),
+            hero_enabled=data.get("hero_enabled", True),
+            hero_scale=data.get("hero_scale", 1.15),
         )
 
 
@@ -95,14 +102,26 @@ class CardRenderer:
         if frame is not None:
             frame = frame.resize((w, h), Image.Resampling.LANCZOS)
 
-        self._draw_artwork(canvas, artwork, layout)
+        art = artwork.convert("RGBA")
+        hero = layout.hero_enabled and self._is_cutout(art)
+        if hero:
+            # Cut-out artwork gets the "hero" treatment: a rarity-tinted
+            # backdrop, then the frame rim, then the character pasted over
+            # the rim so it visually breaks out of the card borders.
+            self._draw_hero_background(canvas, layout, style)
+            if DEBUG_VIEWPORT:
+                self._draw_debug_viewport(canvas, layout)
+            if frame is not None:
+                canvas.alpha_composite(frame)
+            self._draw_hero_character(canvas, art, layout)
+        else:
+            self._draw_artwork(canvas, art, layout)
+            if DEBUG_VIEWPORT:
+                self._draw_debug_viewport(canvas, layout)
 
-        if DEBUG_VIEWPORT:
-            self._draw_debug_viewport(canvas, layout)
+        self._draw_bottom_gradient(canvas, layout, style)
 
-        self._draw_bottom_gradient(canvas, layout)
-
-        if frame is not None:
+        if not hero and frame is not None:
             canvas.alpha_composite(frame)
 
         self._draw_stars(canvas, card, layout, style)
@@ -230,18 +249,96 @@ class CardRenderer:
             width=3 * s,
         )
 
+    def _is_cutout(self, artwork: Image.Image) -> bool:
+        """True when the artwork carries meaningful transparency."""
+
+        if artwork.mode != "RGBA":
+            return False
+        extrema = artwork.getchannel("A").getextrema()
+        low = cast(int, extrema[0])
+        return low < 200
+
+    def _draw_hero_background(
+        self,
+        canvas: Image.Image,
+        layout: FrameLayout,
+        style: RarityStyle,
+    ) -> None:
+        s = self._scale
+        w, h = canvas.size
+        accent = style.accent_rgb
+        base = canvas
+        for y in range(h):
+            p = y / max(h - 1, 1)
+            line = (
+                int(10 + accent[0] * 0.10 * (1 - p)),
+                int(12 + accent[1] * 0.08 * (1 - p)),
+                int(20 + accent[2] * 0.14 * (1 - p)),
+            )
+            ImageDraw.Draw(base).line((0, y, w, y), fill=line)
+        # soft spotlight glow behind the character
+        glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        cx, cy = w // 2, int(h * 0.36)
+        for radius, alpha in (
+            (int(w * 0.85), 18),
+            (int(w * 0.62), 30),
+            (int(w * 0.42), 46),
+        ):
+            rx, ry = radius * s // 2, int(radius * s * 0.62)
+            gd.ellipse(
+                (cx - rx, cy - ry, cx + rx, cy + ry),
+                fill=(*accent, alpha),
+            )
+        base.alpha_composite(glow)
+
+    def _draw_hero_character(
+        self,
+        canvas: Image.Image,
+        artwork: Image.Image,
+        layout: FrameLayout,
+    ) -> None:
+        s = self._scale
+        w, h = canvas.size
+        alpha = artwork.getchannel("A")
+        bbox = alpha.getbbox()
+        if bbox is not None and bbox != (0, 0, artwork.width, artwork.height):
+            artwork = artwork.crop(bbox)
+
+        target_h = h * layout.hero_scale
+        max_w = w * 1.08
+        factor = min(target_h / artwork.height, max_w / artwork.width)
+        aw = max(1, int(artwork.width * factor))
+        ah = max(1, int(artwork.height * factor))
+        character = artwork.resize((aw, ah), Image.Resampling.LANCZOS)
+        x = (w - aw) // 2
+        # pinned near the bottom so the top of the character overflows the rim
+        y = h - ah - 6 * s
+        canvas.alpha_composite(character, (x, y))
+
     def _draw_bottom_gradient(
-        self, canvas: Image.Image, layout: FrameLayout
+        self, canvas: Image.Image, layout: FrameLayout, style: RarityStyle
     ) -> None:
         s = self._scale
         start = layout.gradient_start_y * s
         gradient = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
         gd = ImageDraw.Draw(gradient)
         denom = max(canvas.height - start, 1)
+        accent = style.accent_rgb
+        blend = layout.gradient_accent_blend
         for y in range(start, canvas.height):
             p = (y - start) / denom
             a = int(200 * (p**0.65))
-            gd.line((0, y, canvas.width, y), fill=(5, 7, 12, a))
+            mix = blend * p
+            gd.line(
+                (0, y, canvas.width, y),
+                fill=(
+                    int(5 * (1 - mix) + accent[0] * mix),
+                    int(7 * (1 - mix) + accent[1] * mix),
+                    int(12 * (1 - mix) + accent[2] * mix),
+                    a,
+                ),
+            )
         canvas.alpha_composite(gradient)
 
     def _draw_text(
@@ -257,27 +354,37 @@ class CardRenderer:
         )
         name_bb = draw.textbbox((0, 0), card.character_name, font=name_font)
         name_w = name_bb[2] - name_bb[0]
+        name_x = (cx * s) - name_w / 2
+        name_y = layout.name_top * s
+        # drop shadow for depth, then the stroked name
         draw.text(
-            ((cx * s) - name_w / 2, layout.name_top * s),
+            (name_x + 2 * s, name_y + 2 * s),
+            card.character_name,
+            font=name_font,
+            fill=(0, 0, 0, 150),
+        )
+        draw.text(
+            (name_x, name_y),
             card.character_name,
             font=name_font,
             fill=(250, 250, 253, 255),
-            stroke_width=1 * s,
-            stroke_fill=(0, 0, 0, 180),
+            stroke_width=2 * s,
+            stroke_fill=(0, 0, 0, 200),
         )
 
+        series_text = "\u2009".join(card.series_name.upper())
         series_font = self._fit_font(
-            card.series_name, layout.series_font_size, layout.series_font_min, max_w, bold=False
+            series_text, layout.series_font_size, layout.series_font_min, max_w, bold=False
         )
-        series_bb = draw.textbbox((0, 0), card.series_name.upper(), font=series_font)
+        series_bb = draw.textbbox((0, 0), series_text, font=series_font)
         series_w = series_bb[2] - series_bb[0]
         draw.text(
             ((cx * s) - series_w / 2, layout.series_top * s),
-            card.series_name.upper(),
+            series_text,
             font=series_font,
-            fill=(191, 196, 211, 255),
+            fill=(202, 207, 222, 255),
             stroke_width=1 * s,
-            stroke_fill=(0, 0, 0, 140),
+            stroke_fill=(0, 0, 0, 150),
         )
 
     def _draw_stars(
@@ -309,9 +416,6 @@ class CardRenderer:
         layout: FrameLayout,
         style: RarityStyle,
     ) -> None:
-        badge_im = self._load_asset("badges", "badge")
-        if badge_im is None:
-            return
         s = self._scale
         serial = f"#{card.print_number}"
         font = self._font(layout.badge_font_size, bold=True)
@@ -319,23 +423,61 @@ class CardRenderer:
         bb = draw.textbbox((0, 0), serial, font=font)
         tw = int(bb[2] - bb[0])
         th = int(bb[3] - bb[1])
-        padding = 10 * s
+        padding = 11 * s
+        bh = max(layout.badge_height * s, th + 10 * s)
         bw = tw + padding * 2
-        bh = layout.badge_height * s
-        badge = badge_im.resize((bw, bh), Image.Resampling.LANCZOS)
-        badge = self._tint_image(badge, style.accent_rgb)
         bx = layout.badge_right * s - bw
         by = layout.badge_top * s
+        accent = style.accent_rgb
+        highlight = style.highlight_rgb
+
+        badge = Image.new("RGBA", (bw + 2 * s, bh + 3 * s), (0, 0, 0, 0))
+        bd = ImageDraw.Draw(badge)
+        radius = 8 * s
+        # drop shadow
+        bd.rounded_rectangle(
+            (s, 2 * s + 1, bw + s - 1, bh + 2 * s),
+            radius=radius,
+            fill=(0, 0, 0, 100),
+        )
+        # body: deepened rarity accent
+        body = (
+            int(accent[0] * 0.30) + 8,
+            int(accent[1] * 0.30) + 9,
+            int(accent[2] * 0.32) + 12,
+            248,
+        )
+        bd.rounded_rectangle(
+            (0, 0, bw, bh - s),
+            radius=radius,
+            fill=body,
+        )
+        # rarity-highlight rim
+        bd.rounded_rectangle(
+            (0, 0, bw, bh - s),
+            radius=radius,
+            outline=(*highlight, 240),
+            width=max(1, round(1.5 * s)),
+        )
+        # inner sheen
+        inset = 3 * s
+        bd.rounded_rectangle(
+            (inset, inset, bw - inset, bh - s - inset),
+            radius=max(2, radius - inset),
+            outline=(255, 255, 255, 48),
+            width=max(1, s // 2),
+        )
         canvas.alpha_composite(badge, (bx, by))
-        tx = bx + padding
-        ty = by + (bh - th) // 2 - bb[1]
+
+        tx = bx + (bw - tw) // 2
+        ty = by + (bh - s - th) // 2 - bb[1]
         draw.text(
             (tx, ty),
             serial,
             font=font,
             fill=(255, 255, 255, 255),
             stroke_width=1 * s,
-            stroke_fill=(0, 0, 0, 160),
+            stroke_fill=(0, 0, 0, 180),
         )
 
     def _tint_image(

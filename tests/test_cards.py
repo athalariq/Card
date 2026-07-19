@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from larpcard.cards.assets import ArtworkNotFoundError, LocalArtworkStore
 from larpcard.cards.domain import CardTemplate, Rarity, RenderCard, rarity_style
@@ -87,6 +87,47 @@ class RendererTests(unittest.TestCase):
         self.assertEqual(sheet.mode, "RGBA")
         self.assertGreater(sheet.width, CARD_SIZE[0])
         self.assertGreater(sheet.height, CARD_SIZE[1])
+
+    def test_classic_mode_keeps_opaque_artwork_exact(self) -> None:
+        card = RenderCard(
+            template_id=uuid4(),
+            character_name="Kwon Taekjoo",
+            series_name="Codename: Anastasia",
+            rarity=Rarity.COMMON,
+            print_number=28,
+            edition="standard",
+            variant="base",
+        )
+
+        rendered = self.renderer.render(card, self.artwork)
+
+        # outside the bottom gradient, opaque artwork pixels pass through
+        self.assertEqual(rendered.getpixel((200, 200)), (76, 82, 104, 255))
+
+    def test_hero_mode_covers_cutout_gaps_with_backdrop(self) -> None:
+        cutout = Image.new("RGBA", (800, 1200), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(cutout)
+        draw.ellipse((100, 0, 700, 1100), fill=(200, 80, 90, 255))
+        card = RenderCard(
+            template_id=uuid4(),
+            character_name="Ren Nakamura",
+            series_name="Starfall Academy",
+            rarity=Rarity.LEGENDARY,
+            print_number=3,
+            edition="standard",
+            variant="base",
+        )
+
+        rendered = self.renderer.render(card, cutout)
+
+        # the hero backdrop must cover the transparent gap above the character
+        self.assertGreater(rendered.getpixel((60, 260))[3], 200)
+        # the character is present at the centre (red channel dominant)
+        red, green, blue, _ = rendered.getpixel((200, 300))
+        self.assertGreater(red, green + 30)
+        self.assertGreater(red, blue + 30)
+        # card corners stay transparent
+        self.assertEqual(rendered.getpixel((1, 1))[3], 0)
 
 
 class ArtworkStoreTests(unittest.IsolatedAsyncioTestCase):
