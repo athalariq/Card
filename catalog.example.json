@@ -1,0 +1,17 @@
+[
+  {
+    "character": "Example Character",
+    "series": "Example Series",
+    "aliases": ["Example"],
+    "image": "artwork/example-character.png",
+    "frame": null,
+    "rarity": "common",
+    "edition": "standard",
+    "variant": "base",
+    "tags": ["example"],
+    "release_date": "2026-07-17",
+    "artist": "Example Artist",
+    "drop_weight": 100,
+    "active": true
+  }
+]

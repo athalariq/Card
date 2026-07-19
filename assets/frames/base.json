@@ -1,0 +1,22 @@
+{
+    "viewport": [28, 34, 373, 526],
+    "name_top": 400,
+    "series_top": 436,
+    "gradient_start_y": 380,
+    "star_left": 24,
+    "star_top": 18,
+    "star_gap": 18,
+    "star_size": 20,
+    "badge_right": 388,
+    "badge_top": 18,
+    "badge_width": 66,
+    "badge_height": 24,
+    "text_max_width": 340,
+    "name_font_size": 28,
+    "name_font_min": 16,
+    "series_font_size": 14,
+    "series_font_min": 10,
+    "badge_font_size": 13,
+    "clip_radius": 16,
+    "corner_radius": 22
+}

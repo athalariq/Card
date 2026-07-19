@@ -1,0 +1,1 @@
+"""LarpCard test suite."""
